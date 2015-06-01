@@ -7,74 +7,87 @@ title: Dynamic Autotuning of Algorithmic Skeletons
 University of Edinburgh as part of my Msc in
 [Pervasive Paralleism](http://pervasiveparallelism.inf.ed.ac.uk/).)
 
-This post is about dynamic autotuning of Algorithmic Skeletons, or
-rather, how we can achieve portable performance from libraries which
-offer high levels of abstraction for parallel programming.
+This post is about how we can achieve "hand tuned"-like performance
+form libraries which make parallel programming simple.
 
-Let's start with an example. I want to compute the Mandelbrot set.
+I will start by explaining why you need these libraries. Let's say you
+want to compute the Mandelbrot set.
 
 ![Mandelbrot set](/images/2015-05-29-mandelbrot.png)
 
-The easy way to do this is to write a short C program (as I did) which
-will sequentially calculate the value of each pixel and write the
-results out to a file. This is convenient, it's around 50 lines of
-code, but it's *slow*.
+The easy way to do this is to write a program which will iterate over
+the pixels in your image and calculate their value. This is easy,
+intuitive, and it's around 50 lines of code. The downside is it is
+*slow*.
 
-So in the name of performance let's get the GPU involved and use
-OpenCL. *All* we have to do is add a few headers, select a platform,
-select a device, create a command queue, compile a program, create a
-kernel, create a buffer, enqueue a kernel, read the buffer, handle any
-errors... and we're good. Now we're looking at around 200 lines of
-code, but, it's 20 times faster. In the age of multicores we're going
-to *need* that extra performance, but as developers we're not willing
-to pay the high price that this demands.
+So in the name of performance you start browsing around for ways to
+make this fast. You begin to notice buzz about "heterogeneous
+parallelism", so you decide to give it a shot and dabble in a bit of
+GPGPU programming. After reading through some tutorials and the API
+documentation you find that all you have to do is: *add a few OpenCL
+headers, select a platform, select a device, create a command queue,
+compile a program, create a kernel, create a buffer, enqueue a kernel,
+read the buffer, handle any errors...* and you are done. Now there is
+around 200 lines of code, but it runs 20 times faster. In the age of
+multicores you're going to *need* that extra performance, but as a
+developer you may not be willing to pay the high price that this
+demands.
 
-Algorithmic Skeletons offer a solution; by abstracting common patterns
-of communication, they allow libraries and language authors to provide
-robust parallel implementations of patterns which enables great ease
-of use. I think that this point is best illustrated with some
-gratuitous clipart of a cartoon skeleton doing a jig.
+[Algorithmic Skeletons](http://en.wikipedia.org/wiki/Algorithmic_skeleton)
+offer a solution; by abstracting common patterns of communication,
+they allow libraries and language authors to provide robust parallel
+implementations of patterns which enables great ease of use. In
+essence, they allow you, the user, to focus on solving *problems*, and
+they take care of all the tricky coordination of parallel
+resources. That's all well and good, but if you said to me "Chris,
+surely you could illustrate this point better using a cartoon skeleton
+doing a jig", I'd be inclined to agree with you.
 
 ![Algorithmic Skeletons](/images/2015-05-29-skel.png)
 
-If we implement our Mandelbrot program using Algorithmic Skeletons we
-get a line count close to the sequential version, and with performance
-close to the OpenCL version.
+So you take your new-found knowledge of Algorithmic Skeletons and
+apply it to your Mandelbrot problem. You realise that calculating each
+pixel is just a *Map* operation, so, armed with a Map skeleton, you go
+back to your sequential Mandelbrot code and make the necessary
+adjustments to use Skeletons. Now you have a program which looks just
+like your sequential version, but harnesses all the power of the GPU
+to provide near-"hand tuned" levels of performance.
 
 ![Runtimes and Lines of Code](/images/2015-05-29-mandelbrot-loc-runtime.png)
 
-While this is good, I think we can do better. There's clearly a
-difference in performance between the OpenCL version and the skeleton
-version, so in this post I'm going to argue that if we want both ease
-of use *and* high performance, we need **autotuning**.
+I say *near* hand tuned performance because clearly it's not quite as
+fast as when you did the OpenCL programming yourself. Why is that? The
+reason is that by their nature, Algorithmic Skeletons are forced to
+forgo low-level tuning in order to generalise for all cases. If you
+think how hard it is to select the effective optimisations for a
+program, imagine trying to achieve that at the level of a library for
+*all* possible programs! For this reason, I would argue that if we
+want to achieve both the of ease of use of skeletons *and* the high
+performance of hand tuned code, we need **autotuning**.
 
-The purpose of my research project is to demonstrate dynamic
-autotuning of algorithmic skeletons. For this I'm using SkelCL, which
-offers OpenCL implementations of data-parallel skeletons, and I'm
-going to be looking in particular at Stencil skeletons.
-
-Stencils are patterns of computation which operate on uniform grids of
-data, where the value of each cell is updated based on its current
-value and the value of one or more neighbouring elements, which we'll
-call the border region. In SkelCL, users provide a function to update
-a cell's value, and SkelCL orchestrates this for execution on CPUs and
-multiple GPUs. Each cell maps to a single work item; and this
-collection of work items is then divided into **workgroups** for
-execution on hardware threads.
+I'm going to demonstrate this argument using Stencils, and
+[SkelCL](http://skelcl.uni-muenster.de/), a library for Algorithmic
+Skeletons which targets multi-GPU systems. Stencils are patterns of
+computation which operate on uniform grids of data, where the value of
+each cell is updated based on its current value and the value of one
+or more neighbouring elements, which we'll call the border region. In
+SkelCL, users provide the function which updates a cell's value, and
+SkelCL orchestrates the parallel execution of these functions. Each
+cell maps to a single work item; and this collection of work items is
+then divided into **workgroups** for execution on the target hardware.
 
 ![Decomposition of work items into workgroups](/images/2015-05-29-wg.png)
 
 While the user is clearly in control of the type of work which is
 executed, the size of the grid, and the size of the border region, it
 is very much within the remit of the skeleton implementation to select
-what workgroup size to use. I was interested in investigating just
-what impact selecting a particular workgroup size can have on the
-performance of stencils.
+what workgroup size to use. As such I designed an experiment to
+explore just what effect changing workgroup sizes has on the
+performance of Stencil skeletons.
 
-I designed an experiment to explore the optimisation space for
-workgroup sizes with Stencil skeletons. I selected 14 synthetic
-benchmarks representative of typical stencil applications in addition
-to 3 real world applications taken from
+I created a set of testing workloads using 14 synthetic benchmarks
+representative of typical stencil applications, and 3 real world
+applications taken from
 [image processing](http://en.wikipedia.org/wiki/Canny_edge_detector),
 [cellular automata](http://en.wikipedia.org/wiki/Conway%27s_Game_of_Life),
 and a
@@ -83,12 +96,12 @@ A selection of different dataset sizes and data types were then used
 to collect runtime data from 10 different combinations of CPUs, GPUs,
 and multi-GPUs setups.
 
-By collecting multiple runs of a fixed program/hardware/dataset
-combination but using different workgroup sizes, I was able to perform
+By collecting multiple runs of each program/hardware/dataset
+combination using different workgroup sizes, I am able to perform
 relative performance comparisons to see what the best workgroup size
-for that combination is. By trying a bunch of different optimisations
-and plotting the density of optimal values across the parameter space,
-I can start to get a feel for the optimisation space.
+for that combination is. By trying a bunch of different workloads and
+plotting the density of optimal parameter values across the space, I
+can start to get a feel for the optimisation space.
 
 The results are astounding.
 
@@ -98,9 +111,9 @@ There is clearly no silver bullet value which works well for all
 programs, devices, and datasets. Furthermore, the values which *are*
 optimal are distributed wildly across the parameter space. By sorting
 the workgroup sizes by the frequency at which they were optimal, we
-can see that by using a fixed workgroup size, you will be optimal only
-*10%* of the time. In fact, you need to select from 10 different
-workgroup sizes just to be optimal 50% of the time.
+can see that by using a fixed workgroup size, you will be optimal for
+only *10%* of the time, at best. In fact, you need to select from 10
+different workgroup sizes just to be optimal 50% of the time.
 
 ![](/images/2015-05-29-best-wg.png)
 
@@ -109,60 +122,70 @@ device imposes a
 [maximum workgroup size](https://www.khronos.org/registry/cl/sdk/1.0/docs/man/xhtml/clGetDeviceInfo.html)
 which can be checked statically. More troubling, each kernel too
 imposes a
-[maximum workgroup size](https://www.khronos.org/registry/cl/sdk/1.1/docs/man/xhtml/clGetKernelWorkGroupInfo.html),
-which can only be checked at runtime once a program has been compiled.
+[maximum workgroup size](https://www.khronos.org/registry/cl/sdk/1.1/docs/man/xhtml/clGetKernelWorkGroupInfo.html)
+which can only be checked at runtime once a kernel has been compiled.
 
 By applying these constraint tests, we can cull the list of possible
-workgroup sizes to generate an autotuner with a ZeroR classifier,
-i.e. a simple classifier that simply selects the workgroup size which
-provides the highest average case performance and is legal for all
-cases. We can now compare speedup of *all* tested workgroup sizes
-relative to this ZeroR autotuner.
+workgroup sizes to generate a ZeroR powered autotuner, i.e. a simple
+"auto"tuner that simply selects the workgroup size that provides the
+highest average case performance and is legal for all cases. We can
+now compare speedup of *all* tested workgroup sizes relative to this
+ZeroR autotuner.
 
 ![Distributino of speedups across programs](/images/2015-05-29-violion-prog.png)
 
-Hmm. It seems that there is a lot of room for improvement. This shows
-the problem with having to generalise for all cases - you lose out on
-up to *10x* performance improvements. Putting this all together, this
-presents a compelling case for the development of an autotuner which
-can select the optimal workgroup size at runtime, and that is what I
-have set out to achieve.
+Hmm. It seems that there is a lot of room for improvement, which
+demonstrates the problem with having to generalise for all cases - you
+lose out on up to *10x* performance improvements. Let's put this all
+together:
 
-The first step to developing the autotuner was feature
-extraction. That means mining the dataset of experimental results to
-begin to correlate **explanatory** variables with the measured
-**dependent** variable (in this case, some measure of
-performance). There are three sets of features we are interested in,
-which will explain the hardware, software, and dataset.
+1. The best workgroup size for a particular workload depends on the
+   hardware, software, and dataset.
+1. Not all workgroup sizes are legal, and we can only test if a value
+   *is* legal at runtime.
+1. Differing workloads have wildly different optimal workgroup sizes,
+   and selecting the right one can give you a 10x boost in
+   performance.
 
-For hardware features, it's simply a case of recording the number of
-execution devices, and querying the OpenCL API to fetch relevant
-device information, such as the number of cores available, and size of
-local memory. Simple enough, moving on.
+This presents a compelling case for the development of an autotuner
+which can select the optimal workgroup size at runtime, and that is
+what I have set out to achieve.
+
+The first step to developing the autotuner is feature extraction. That
+means mining the dataset to begin to correlate the measured
+**dependent** variable (in this case, some measure of performance)
+with **explanatory** variables, or *features*. There are three sets of
+features we are interested in: the hardware, software, and dataset.
+
+For hardware features, it's simply a case of querying the OpenCL API
+to fetch relevant device information, such as the number of cores
+available, and size of local memory. Since SkelCL supports multi-GPU
+parallelism, we'll make a note of how many devices were used, too.
 
 The software features are a little more tricky. We're looking for a
-way to express the *computation* that a given source code
-describes. For this, I first compile the kernels to LLVM bitcode, and
-then use the static instruction counts generated by LLVM's `InstCount`
-to generate a feature vector which comprises the total instruction
-count, and the *density* of different kinds of instructions, e.g. The
-number of floating point additions *per instruction*. This is
-sufficient for my needs but it is worth noting that such a crude
-metric of computation would likely fall down in the presence of
-sufficient control flow, where in the static instruction counts would
-no longer resemble the number of instructions *actually* executed.
+way to capture some description of the *computation* of a given source
+code. For this, I first compile a kernel to LLVM bitcode, and then use
+the static instruction counts generated by LLVM's
+[InstCount](http://llvm.org/docs/doxygen/html/InstCount_8cpp_source.html)
+to generate a feature vector of the total instruction count and the
+*density* of different kinds of instructions, e.g. the number of
+floating point additions *per instruction*. This is sufficient for my
+needs but it is worth noting that such a crude metric may likely fall
+down in the presence of sufficiently diverging control flow, since the
+static instruction counts would no longer resemble the number of
+instructions *actually* executed.
 
-Dataset features are simple by comparison. I merely record the width
-and height of the input grid, and use C++ template functions to
-stringify the input and output data types.
+Dataset features are simple by comparison - I merely record the width
+and height of the grid, and use C++ template functions to stringify
+the input and output data types.
 
 Once we have features, we can create a dataset from which will can
 train machine learning classifiers. For each unique feature vector, we
 provide a label which is the workgroup size which gave the best
-performance under the given conditions.
+performance under those conditions.
 
-An autotuner can now be inserted into SkelCL which performs runtime
-feature extraction and classification before every stencil invocation.
+We now insert an autotuner into SkelCL which performs runtime feature
+extraction and classification before every stencil invocation.
 
 ![OmniTune system diagram](/images/2015-05-29-omnitune.png)
 
